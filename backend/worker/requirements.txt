@@ -1,0 +1,7 @@
+sqlalchemy
+psycopg[binary]
+pydantic-settings
+redis
+rq
+essentia
+mutagen

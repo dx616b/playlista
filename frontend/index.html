@@ -1,0 +1,891 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Playlista</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; background: #111; color: #eee; }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+      input, button, select { padding: 8px; border-radius: 6px; border: 1px solid #444; background: #1c1c1c; color: #eee; }
+      button { cursor: pointer; }
+      pre { background: #1c1c1c; border: 1px solid #333; padding: 12px; border-radius: 8px; overflow: auto; }
+      .card { border: 1px solid #333; border-radius: 8px; padding: 12px; margin-top: 12px; }
+      canvas { background: #151515; border: 1px solid #333; border-radius: 8px; }
+      .muted { color: #aaa; font-size: 12px; }
+      .badge { display: inline-block; margin: 4px 8px 4px 0; padding: 4px 8px; border-radius: 999px; border: 1px solid #444; font-size: 12px; color: #ddd; }
+      #generationDiagnostics { margin: 8px 0 0; color: #c9d1d9; font-size: 12px; }
+      #graphTooltip { margin-top: 8px; padding: 8px; border: 1px solid #333; border-radius: 8px; background: #151515; font-size: 12px; color: #ddd; min-height: 18px; }
+      .field { display: flex; flex-direction: column; gap: 4px; min-width: 120px; }
+      .field label { font-size: 12px; color: #bbb; }
+      .field .value { color: #8b949e; font-size: 11px; }
+      #customControls { display: none; margin-top: 8px; }
+      #customControls.open { display: block; }
+      #playlistOut.hidden { display: none; }
+      table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+      th, td { border: 1px solid #333; padding: 6px 8px; text-align: left; font-size: 12px; }
+      th { background: #1a1a1a; color: #c9d1d9; }
+      tr:nth-child(even) td { background: #141414; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <h1>Playlista</h1>
+    <div class="card">
+      <h3>Library</h3>
+      <div class="row">
+        <input id="scanPath" placeholder="/music" />
+        <select id="scanPreset"></select>
+        <button onclick="useSelectedPreset()">Use Preset</button>
+        <button onclick="scanLibrary()">Scan</button>
+        <button onclick="enqueueAnalysis()">Enqueue Analysis</button>
+      </div>
+      <pre id="libraryOut"></pre>
+    </div>
+
+    <div class="card">
+      <h3>Tracks</h3>
+      <div class="row">
+        <button onclick="loadTrackStatus()">Refresh Tracks</button>
+        <button id="toggleTracksTableBtn" onclick="toggleTracksTable()">Hide Table</button>
+        <label><input id="showAnalyzedTracks" type="checkbox" checked /> analyzed</label>
+        <label><input id="showNotAnalyzedTracks" type="checkbox" checked /> not analyzed</label>
+        <input id="trackSearch" placeholder="search title/artist/path" />
+      </div>
+      <div class="row">
+        <button onclick="changeTrackPage(-1)">Prev</button>
+        <button onclick="changeTrackPage(1)">Next</button>
+        <span id="trackPageInfo" class="muted"></span>
+      </div>
+      <div id="trackCounts" class="muted"></div>
+      <div id="tracksTableWrap" class="muted"></div>
+    </div>
+
+    <div class="card">
+      <h3>Manual Playlist Builder</h3>
+      <div class="row">
+        <input id="manualPlaylistName" placeholder="Manual Playlist" />
+        <input id="manualPlaylistId" placeholder="existing playlist id (optional)" />
+        <button onclick="loadManualPlaylist()">Load Manual Playlist</button>
+        <button onclick="saveManualPlaylist()">Save Manual Playlist</button>
+      </div>
+      <div class="row">
+        <div class="muted">Use "Tracks" search, then click "add" to include tracks.</div>
+      </div>
+      <div id="manualOut" class="muted"></div>
+    </div>
+
+    <div class="card">
+      <h3>Generate Playlist</h3>
+      <div class="row">
+        <div class="field"><label title="Playlist name">Name</label><input id="playlistName" placeholder="Generated Playlist" /></div>
+        <div class="field">
+          <label title="How many tracks to include">Limit</label>
+          <input id="limit" type="range" min="1" max="200" value="25" />
+          <span class="value" id="limitValue">25</span>
+        </div>
+        <div class="field">
+          <label title="Preset strategy for defaults">Profile</label>
+          <select id="profile">
+            <option value="balanced">balanced</option>
+            <option value="focus">focus</option>
+            <option value="workout">workout</option>
+            <option value="chill">chill</option>
+            <option value="drive">drive</option>
+          </select>
+        </div>
+        <div class="field">
+          <label title="Built-in or saved custom preset">Preset</label>
+          <select id="generationPreset"></select>
+        </div>
+        <button onclick="applySelectedGenerationPreset()">Apply Preset</button>
+        <button onclick="saveCurrentPreset()">Save Preset</button>
+        <button id="customToggleBtn" onclick="toggleCustomControls()">Custom</button>
+        <button onclick="generatePlaylist()">Generate</button>
+      </div>
+      <div id="customControls">
+        <div class="row">
+        <div class="field"><label title="Optional fixed starting track id">Seed Track ID</label><input id="seedTrackId" placeholder="uuid or empty" /></div>
+        <div class="field"><label title="Optional lower tempo bound">Min BPM</label><input id="minBpm" type="number" placeholder="none" /></div>
+        <div class="field"><label title="Optional upper tempo bound">Max BPM</label><input id="maxBpm" type="number" placeholder="none" /></div>
+        <div class="field">
+          <label title="Desired energy shape across playlist">Energy Curve</label>
+          <select id="curve">
+            <option value="flat">flat</option>
+            <option value="warmup">warmup</option>
+            <option value="peak">peak</option>
+            <option value="cooldown">cooldown</option>
+          </select>
+        </div>
+        <div class="field">
+          <label title="Higher means broader timbre/style spread">Diversity</label>
+          <input id="diversity" type="range" min="0" max="1" step="0.01" value="0.30" />
+          <span class="value" id="diversityValue">0.30</span>
+        </div>
+        <div class="field">
+          <label title="Avoid repeating same artist for N recent tracks">Artist Cooldown</label>
+          <input id="artistCooldown" type="range" min="0" max="20" value="2" />
+          <span class="value" id="artistCooldownValue">2</span>
+        </div>
+        <div class="field">
+          <label title="Avoid repeating same album for N recent tracks">Album Cooldown</label>
+          <input id="albumCooldown" type="range" min="0" max="20" value="1" />
+          <span class="value" id="albumCooldownValue">1</span>
+        </div>
+        <div class="field">
+          <label title="Penalize transitions above this BPM difference">Max BPM Jump</label>
+          <input id="maxBpmJump" type="range" min="2" max="80" value="18" />
+          <span class="value" id="maxBpmJumpValue">18</span>
+        </div>
+        <div class="field">
+          <label title="Minimum acceptable transition score (0-1)">Min Transition Score</label>
+          <input id="minTransitionScore" type="range" min="0" max="1" step="0.01" value="0.55" />
+          <span class="value" id="minTransitionScoreValue">0.55</span>
+        </div>
+        <div class="field">
+          <label title="Small random jitter to create variants (0.00-0.20)">Temperature</label>
+          <input id="temperature" type="range" min="0" max="0.2" step="0.01" value="0.03" />
+          <span class="value" id="temperatureValue">0.03</span>
+        </div>
+        <div class="field"><label title="Optional seed for reproducible variation">Variation Seed</label><input id="variationSeed" type="number" placeholder="auto" /></div>
+        <div class="field">
+          <label title="How many recent playlists to penalize reuse from">History Window</label>
+          <input id="historyWindow" type="range" min="0" max="50" value="3" />
+          <span class="value" id="historyWindowValue">3</span>
+        </div>
+        <div class="field">
+          <label title="Penalty when a track appears in recent playlists">History Penalty</label>
+          <input id="historyPenalty" type="range" min="0" max="1" step="0.01" value="0.12" />
+          <span class="value" id="historyPenaltyValue">0.12</span>
+        </div>
+        <div class="field"><label title="Stop early if no track matches constraints instead of forcing limit">Strict Constraints</label><input id="strictConstraints" type="checkbox" /></div>
+        <div class="field"><label title="Auto-regenerate when controls change">Real-time Mode</label><input id="realtimeMode" type="checkbox" /></div>
+        </div>
+      </div>
+      <div class="row">
+        <input id="playlistId" placeholder="playlist id" />
+        <button onclick="downloadM3U()">Download M3U</button>
+        <button onclick="downloadM3U8()">Download M3U8</button>
+        <button onclick="downloadJSON()">Download JSON</button>
+        <button id="toggleJsonBtn" onclick="togglePlaylistJson()">Show JSON</button>
+      </div>
+      <div class="row">
+        <label><input id="showEnergy" type="checkbox" checked /> Energy</label>
+        <label><input id="showTarget" type="checkbox" checked /> Target</label>
+        <label><input id="showScore" type="checkbox" checked /> Score</label>
+        <label><input id="showBpm" type="checkbox" checked /> BPM</label>
+        <label><input id="showTransition" type="checkbox" /> Transition</label>
+        <label><input id="showCurveFit" type="checkbox" /> Curve Fit</label>
+        <label><input id="showHarmonic" type="checkbox" /> Harmonic</label>
+      </div>
+      <div id="qualityBadges"></div>
+      <div id="generationDiagnostics" class="muted"></div>
+      <canvas id="playlistGraph" width="900" height="260"></canvas>
+      <div id="graphTooltip">Hover chart to inspect track details.</div>
+      <div class="muted">Green: target energy, Blue: actual energy, Orange: score, Purple: BPM, Yellow: transition, Cyan: curve fit, Pink: harmonic. Red dots = weak transitions.</div>
+      <pre id="playlistOut" class="hidden"></pre>
+    </div>
+
+    <script>
+      const API = "http://localhost:8000";
+      let lastPlaylistData = null;
+      let lastGraphMeta = null;
+      let realtimeTimer = null;
+      let generating = false;
+      let trackCatalog = [];
+      let manualTrackIds = [];
+      let trackPage = 1;
+      const TRACKS_PAGE_SIZE = 30;
+      let trackSortKey = "artist";
+      let trackSortDir = "asc";
+      let tracksTableVisible = true;
+      let playlistJsonVisible = false;
+      const CUSTOM_PRESETS_KEY = "playlista.customPresets.v1";
+      const BUILTIN_PRESETS = {
+        balanced: { profile: "balanced", target_energy_curve: "flat", diversity: 0.30, artist_cooldown: 2, album_cooldown: 1, max_bpm_jump: 18.0, min_transition_score: 0.55, temperature: 0.03, history_window: 3, history_penalty: 0.12, strict_constraints: false },
+        focus: { profile: "focus", target_energy_curve: "flat", diversity: 0.20, artist_cooldown: 3, album_cooldown: 2, max_bpm_jump: 12.0, min_transition_score: 0.62, temperature: 0.02, history_window: 4, history_penalty: 0.14, strict_constraints: false },
+        workout: { profile: "workout", target_energy_curve: "warmup", diversity: 0.40, artist_cooldown: 2, album_cooldown: 1, max_bpm_jump: 22.0, min_transition_score: 0.50, temperature: 0.05, history_window: 3, history_penalty: 0.10, strict_constraints: false },
+        chill: { profile: "chill", target_energy_curve: "cooldown", diversity: 0.25, artist_cooldown: 3, album_cooldown: 2, max_bpm_jump: 10.0, min_transition_score: 0.65, temperature: 0.02, history_window: 5, history_penalty: 0.16, strict_constraints: false },
+        drive: { profile: "drive", target_energy_curve: "peak", diversity: 0.35, artist_cooldown: 2, album_cooldown: 1, max_bpm_jump: 16.0, min_transition_score: 0.58, temperature: 0.04, history_window: 3, history_penalty: 0.12, strict_constraints: false }
+      };
+      const PROFILE_DEFAULT_CURVE = {
+        balanced: "flat",
+        focus: "flat",
+        workout: "warmup",
+        chill: "cooldown",
+        drive: "peak"
+      };
+
+      function getCustomPresets() {
+        try {
+          const raw = localStorage.getItem(CUSTOM_PRESETS_KEY);
+          const parsed = raw ? JSON.parse(raw) : {};
+          return parsed && typeof parsed === "object" ? parsed : {};
+        } catch {
+          return {};
+        }
+      }
+
+      function setCustomPresets(presets) {
+        localStorage.setItem(CUSTOM_PRESETS_KEY, JSON.stringify(presets));
+      }
+
+      function loadGenerationPresetOptions() {
+        const el = document.getElementById("generationPreset");
+        el.innerHTML = "";
+        Object.keys(BUILTIN_PRESETS).forEach((name) => {
+          const opt = document.createElement("option");
+          opt.value = `builtin:${name}`;
+          opt.textContent = `builtin: ${name}`;
+          el.appendChild(opt);
+        });
+        const custom = getCustomPresets();
+        Object.keys(custom).sort().forEach((name) => {
+          const opt = document.createElement("option");
+          opt.value = `custom:${name}`;
+          opt.textContent = `custom: ${name}`;
+          el.appendChild(opt);
+        });
+      }
+
+      function setControlValues(values) {
+        if (values.profile) document.getElementById("profile").value = values.profile;
+        if (values.target_energy_curve) document.getElementById("curve").value = values.target_energy_curve;
+        if (typeof values.seed_track_id === "string") document.getElementById("seedTrackId").value = values.seed_track_id;
+        if (typeof values.min_bpm === "number") document.getElementById("minBpm").value = values.min_bpm;
+        if (typeof values.max_bpm === "number") document.getElementById("maxBpm").value = values.max_bpm;
+        if (typeof values.diversity === "number") document.getElementById("diversity").value = values.diversity;
+        if (typeof values.artist_cooldown === "number") document.getElementById("artistCooldown").value = values.artist_cooldown;
+        if (typeof values.album_cooldown === "number") document.getElementById("albumCooldown").value = values.album_cooldown;
+        if (typeof values.max_bpm_jump === "number") document.getElementById("maxBpmJump").value = values.max_bpm_jump;
+        if (typeof values.min_transition_score === "number") document.getElementById("minTransitionScore").value = values.min_transition_score;
+        if (typeof values.temperature === "number") document.getElementById("temperature").value = values.temperature;
+        if (typeof values.variation_seed === "number") document.getElementById("variationSeed").value = values.variation_seed;
+        if (typeof values.history_window === "number") document.getElementById("historyWindow").value = values.history_window;
+        if (typeof values.history_penalty === "number") document.getElementById("historyPenalty").value = values.history_penalty;
+        if (typeof values.strict_constraints === "boolean") document.getElementById("strictConstraints").checked = values.strict_constraints;
+        ["limit","diversity","artistCooldown","albumCooldown","maxBpmJump","minTransitionScore","temperature","historyWindow","historyPenalty"].forEach((id) => {
+          const input = document.getElementById(id);
+          input.dispatchEvent(new Event("input"));
+        });
+      }
+
+      function getCurrentGeneratePayload() {
+        return {
+          name: document.getElementById("playlistName").value || "Generated Playlist",
+          limit: parseInt(document.getElementById("limit").value, 10),
+          seed_track_id: document.getElementById("seedTrackId").value.trim() || null,
+          profile: document.getElementById("profile").value,
+          min_bpm: document.getElementById("minBpm").value ? parseFloat(document.getElementById("minBpm").value) : null,
+          max_bpm: document.getElementById("maxBpm").value ? parseFloat(document.getElementById("maxBpm").value) : null,
+          target_energy_curve: document.getElementById("curve").value,
+          diversity: parseFloat(document.getElementById("diversity").value || "0.30"),
+          artist_cooldown: parseInt(document.getElementById("artistCooldown").value || "2", 10),
+          album_cooldown: parseInt(document.getElementById("albumCooldown").value || "1", 10),
+          max_bpm_jump: parseFloat(document.getElementById("maxBpmJump").value || "18"),
+          min_transition_score: parseFloat(document.getElementById("minTransitionScore").value || "0.55"),
+          temperature: parseFloat(document.getElementById("temperature").value || "0.03"),
+          variation_seed: document.getElementById("variationSeed").value ? parseInt(document.getElementById("variationSeed").value, 10) : null,
+          history_window: parseInt(document.getElementById("historyWindow").value || "3", 10),
+          history_penalty: parseFloat(document.getElementById("historyPenalty").value || "0.12"),
+          strict_constraints: document.getElementById("strictConstraints").checked
+        };
+      }
+
+      function applySelectedGenerationPreset() {
+        const value = document.getElementById("generationPreset").value || "builtin:balanced";
+        if (value.startsWith("builtin:")) {
+          const key = value.slice("builtin:".length);
+          setControlValues(BUILTIN_PRESETS[key] || BUILTIN_PRESETS.balanced);
+          return;
+        }
+        if (value.startsWith("custom:")) {
+          const key = value.slice("custom:".length);
+          const custom = getCustomPresets();
+          if (custom[key]) setControlValues(custom[key]);
+        }
+      }
+
+      function saveCurrentPreset() {
+        const name = window.prompt("Preset name");
+        if (!name) return;
+        const clean = name.trim();
+        if (!clean) return;
+        const payload = getCurrentGeneratePayload();
+        delete payload.name;
+        delete payload.limit;
+        const custom = getCustomPresets();
+        custom[clean] = payload;
+        setCustomPresets(custom);
+        loadGenerationPresetOptions();
+        document.getElementById("generationPreset").value = `custom:${clean}`;
+      }
+
+      function toggleCustomControls() {
+        const el = document.getElementById("customControls");
+        const btn = document.getElementById("customToggleBtn");
+        const open = el.classList.toggle("open");
+        btn.textContent = open ? "Custom (open)" : "Custom";
+      }
+
+      function savePath() {
+        const value = document.getElementById("scanPath").value.trim();
+        if (value) localStorage.setItem("playlista.scanPath", value);
+      }
+
+      function loadSavedPath() {
+        const saved = localStorage.getItem("playlista.scanPath");
+        if (saved) document.getElementById("scanPath").value = saved;
+      }
+
+      async function loadPresets() {
+        const presetEl = document.getElementById("scanPreset");
+        presetEl.innerHTML = "";
+        try {
+          const res = await fetch(`${API}/library/presets`);
+          const data = await res.json();
+          const presets = data.presets || [];
+          for (const p of presets) {
+            const opt = document.createElement("option");
+            opt.value = p;
+            opt.textContent = p;
+            presetEl.appendChild(opt);
+          }
+        } catch (err) {
+          // no-op for now
+        }
+      }
+
+      function formatTrackLabel(t) {
+        const title = t.title || "Unknown Title";
+        const artist = t.artist || "Unknown Artist";
+        const status = t.analyzed ? "analyzed" : "not_analyzed";
+        return `${artist} - ${title} [${status}]`;
+      }
+
+      function renderTrackStatus() {
+        if (!tracksTableVisible) {
+          document.getElementById("tracksTableWrap").textContent = "Table hidden.";
+          return;
+        }
+        if (!trackCatalog.length) {
+          document.getElementById("tracksTableWrap").textContent = "No tracks for current filter.";
+          return;
+        }
+        let displayRows = trackCatalog.slice();
+        if (trackSortKey === "in_manual") {
+          const dir = trackSortDir === "asc" ? 1 : -1;
+          displayRows.sort((a, b) => {
+            const av = manualTrackIds.includes(a.id) ? 1 : 0;
+            const bv = manualTrackIds.includes(b.id) ? 1 : 0;
+            if (av < bv) return -1 * dir;
+            if (av > bv) return 1 * dir;
+            return 0;
+          });
+        }
+        const rows = displayRows.map((t) => {
+          const title = (t.title || "Unknown Title").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          const artist = (t.artist || "Unknown Artist").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          const album = (t.album || "-").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          const idShort = t.id.slice(0, 8);
+          const status = t.analyzed ? "analyzed" : "not analyzed";
+          const inManual = manualTrackIds.includes(t.id) ? "yes" : "no";
+          const m = t.metrics || {};
+          const rm = t.raw_metrics || {};
+          const bpm = (typeof m.bpm === "number") ? m.bpm.toFixed(2) : "-";
+          const energy = (typeof m.energy === "number") ? m.energy.toFixed(3) : "-";
+          const keyStrength = (typeof m.key_strength === "number") ? m.key_strength.toFixed(3) : "-";
+          const flux = (typeof m.spectral_flux === "number") ? m.spectral_flux.toFixed(3) : "-";
+          const dyn = (typeof m.dynamic_complexity === "number") ? m.dynamic_complexity.toFixed(3) : "-";
+          const rawBpm = (typeof rm.bpm === "number") ? rm.bpm.toFixed(2) : "-";
+          const rawEnergy = (typeof rm.energy === "number") ? rm.energy.toFixed(4) : "-";
+          const rawLoudness = (typeof rm.loudness === "number") ? rm.loudness.toFixed(2) : "-";
+          const rawKeyStrength = (typeof rm.key_strength === "number") ? rm.key_strength.toFixed(4) : "-";
+          return `<tr>
+            <td class="mono" title="${t.id}">${idShort}</td>
+            <td>${artist}</td>
+            <td>${title}</td>
+            <td>${album}</td>
+            <td>${status}</td>
+            <td>${bpm}</td>
+            <td>${energy}</td>
+            <td>${keyStrength}</td>
+            <td>${flux}</td>
+            <td>${dyn}</td>
+            <td>${rawBpm}</td>
+            <td>${rawEnergy}</td>
+            <td>${rawLoudness}</td>
+            <td>${rawKeyStrength}</td>
+            <td>${inManual}</td>
+            <td><button onclick="addTrackToManual('${t.id}')">Add</button></td>
+          </tr>`;
+        });
+        document.getElementById("tracksTableWrap").innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th><button onclick="setTrackSort('id')">ID</button></th>
+                <th><button onclick="setTrackSort('artist')">Artist</button></th>
+                <th><button onclick="setTrackSort('title')">Title</button></th>
+                <th><button onclick="setTrackSort('album')">Album</button></th>
+                <th><button onclick="setTrackSort('status')">Status</button></th>
+                <th><button onclick="setTrackSort('bpm')">BPM</button></th>
+                <th><button onclick="setTrackSort('energy')">Energy</button></th>
+                <th><button onclick="setTrackSort('key_strength')">Key Strength</button></th>
+                <th><button onclick="setTrackSort('spectral_flux')">Flux</button></th>
+                <th><button onclick="setTrackSort('dynamic_complexity')">Dyn Comp</button></th>
+                <th>Raw BPM</th>
+                <th>Raw Energy</th>
+                <th>Raw Loudness</th>
+                <th>Raw Key Str</th>
+                <th><button onclick="setTrackSort('in_manual')">In Manual</button></th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.join("")}
+            </tbody>
+          </table>
+        `;
+      }
+
+      async function loadTrackStatus() {
+        const showA = document.getElementById("showAnalyzedTracks").checked;
+        const showN = document.getElementById("showNotAnalyzedTracks").checked;
+        const q = document.getElementById("trackSearch").value.trim();
+        let analyzed = "all";
+        if (showA && !showN) analyzed = "yes";
+        if (!showA && showN) analyzed = "no";
+        const params = new URLSearchParams({
+          page: String(trackPage),
+          page_size: String(TRACKS_PAGE_SIZE),
+          sort_by: trackSortKey,
+          sort_dir: trackSortDir,
+          analyzed,
+        });
+        if (q) params.set("q", q);
+        const res = await fetch(`${API}/tracks/status?${params.toString()}`);
+        const data = await res.json();
+        trackCatalog = data.tracks || [];
+        const c = data.counts || {};
+        const p = data.pagination || {};
+        trackPage = p.page || trackPage;
+        document.getElementById("trackPageInfo").textContent = `page ${p.page || 1}/${p.total_pages || 1} (${c.filtered_total || 0} filtered)`;
+        document.getElementById("trackCounts").textContent = `total=${c.total || 0} | analyzed=${c.analyzed || 0} | not_analyzed=${c.not_analyzed || 0}`;
+        renderTrackStatus();
+        renderManualList();
+      }
+
+      function changeTrackPage(delta) {
+        trackPage += delta;
+        if (trackPage < 1) trackPage = 1;
+        loadTrackStatus();
+      }
+
+      function setTrackSort(key) {
+        if (key === "in_manual") {
+          renderTrackStatus();
+          return;
+        }
+        if (trackSortKey === key) {
+          trackSortDir = trackSortDir === "asc" ? "desc" : "asc";
+        } else {
+          trackSortKey = key;
+          trackSortDir = "asc";
+        }
+        trackPage = 1;
+        loadTrackStatus();
+      }
+
+      function toggleTracksTable() {
+        tracksTableVisible = !tracksTableVisible;
+        document.getElementById("toggleTracksTableBtn").textContent = tracksTableVisible ? "Hide Table" : "Show Table";
+        renderTrackStatus();
+      }
+
+      function togglePlaylistJson() {
+        playlistJsonVisible = !playlistJsonVisible;
+        const el = document.getElementById("playlistOut");
+        const btn = document.getElementById("toggleJsonBtn");
+        if (playlistJsonVisible) {
+          el.classList.remove("hidden");
+          btn.textContent = "Hide JSON";
+        } else {
+          el.classList.add("hidden");
+          btn.textContent = "Show JSON";
+        }
+      }
+
+      function addTrackToManual(trackId) {
+        if (!manualTrackIds.includes(trackId)) manualTrackIds.push(trackId);
+        renderTrackStatus();
+        renderManualList();
+      }
+
+      function removeManualTrack(index) {
+        manualTrackIds.splice(index, 1);
+        renderTrackStatus();
+        renderManualList();
+      }
+
+      function moveManualTrack(index, delta) {
+        const j = index + delta;
+        if (j < 0 || j >= manualTrackIds.length) return;
+        const tmp = manualTrackIds[index];
+        manualTrackIds[index] = manualTrackIds[j];
+        manualTrackIds[j] = tmp;
+        renderManualList();
+      }
+
+      function renderManualList() {
+        const lines = [];
+        manualTrackIds.forEach((id, idx) => {
+          const t = trackCatalog.find((x) => x.id === id);
+          const label = (t ? `${t.artist || "Unknown Artist"} - ${t.title || "Unknown Title"}` : id).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          lines.push(`<div style="margin:6px 0; padding:6px; border:1px solid #333; border-radius:6px;">
+            <div>#${idx + 1} ${label}</div>
+            <button onclick="moveManualTrack(${idx}, -1)">up</button>
+            <button onclick="moveManualTrack(${idx}, 1)">down</button>
+            <button onclick="removeManualTrack(${idx})">remove</button>
+          </div>`);
+        });
+        document.getElementById("manualOut").innerHTML = lines.length ? lines.join("") : "Manual playlist is empty.";
+      }
+
+      async function saveManualPlaylist() {
+        const name = document.getElementById("manualPlaylistName").value.trim() || "Manual Playlist";
+        const playlistId = document.getElementById("manualPlaylistId").value.trim();
+        if (!manualTrackIds.length) {
+          document.getElementById("manualOut").textContent = "Manual playlist is empty.";
+          return;
+        }
+        const payload = { name, track_ids: manualTrackIds };
+        const url = playlistId ? `${API}/playlists/${playlistId}/manual` : `${API}/playlists/manual`;
+        const method = playlistId ? "PUT" : "POST";
+        const res = await fetch(url, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.playlist_id) {
+          document.getElementById("manualPlaylistId").value = data.playlist_id;
+          document.getElementById("playlistId").value = data.playlist_id;
+        }
+        document.getElementById("manualOut").textContent = JSON.stringify(data, null, 2);
+      }
+
+      async function loadManualPlaylist() {
+        const playlistId = document.getElementById("manualPlaylistId").value.trim();
+        if (!playlistId) {
+          document.getElementById("manualOut").textContent = "Missing manual playlist id.";
+          return;
+        }
+        const res = await fetch(`${API}/playlists/${playlistId}`);
+        const data = await res.json();
+        const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+        manualTrackIds = tracks.map((t) => (t.track && t.track.id ? t.track.id : null)).filter(Boolean);
+        if (data.name) document.getElementById("manualPlaylistName").value = data.name;
+        renderTrackStatus();
+        renderManualList();
+      }
+
+      function useSelectedPreset() {
+        const presetEl = document.getElementById("scanPreset");
+        const value = presetEl.value;
+        if (value) {
+          document.getElementById("scanPath").value = value;
+          savePath();
+        }
+      }
+
+      async function scanLibrary() {
+        const root_path = document.getElementById("scanPath").value || null;
+        savePath();
+        const res = await fetch(`${API}/library/scan`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ root_path })
+        });
+        const data = await res.json();
+        document.getElementById("libraryOut").textContent = JSON.stringify(data, null, 2);
+      }
+
+      async function enqueueAnalysis() {
+        const res = await fetch(`${API}/analysis/enqueue`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        document.getElementById("libraryOut").textContent = JSON.stringify(data, null, 2);
+      }
+
+      async function generatePlaylist() {
+        if (generating) return;
+        generating = true;
+        const payload = getCurrentGeneratePayload();
+        const res = await fetch(`${API}/playlists/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.playlist_id) {
+          document.getElementById("playlistId").value = data.playlist_id;
+        }
+        lastPlaylistData = data;
+        renderGenerationDiagnostics(data);
+        renderPlaylistGraph(data, null);
+        const qualityRes = await fetch(`${API}/playlists/${data.playlist_id}/quality`);
+        const quality = await qualityRes.json();
+        renderQualityBadges(quality);
+        document.getElementById("playlistOut").textContent = JSON.stringify(data, null, 2);
+        generating = false;
+      }
+
+      function scheduleRealtimeGenerate() {
+        if (!document.getElementById("realtimeMode").checked) return;
+        if (realtimeTimer) clearTimeout(realtimeTimer);
+        realtimeTimer = setTimeout(() => {
+          generatePlaylist();
+        }, 450);
+      }
+
+      function bindSlider(inputId, valueId, formatter) {
+        const input = document.getElementById(inputId);
+        const out = document.getElementById(valueId);
+        const fmt = formatter || ((v) => v);
+        const render = () => { out.textContent = fmt(input.value); };
+        input.addEventListener("input", () => {
+          render();
+          scheduleRealtimeGenerate();
+        });
+        render();
+      }
+
+      function applyProfileDefaults() {
+        const profile = document.getElementById("profile").value;
+        const preset = BUILTIN_PRESETS[profile];
+        if (preset) setControlValues(preset);
+      }
+
+      function drawSeries(ctx, points, color) {
+        if (!points.length) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+        ctx.stroke();
+      }
+
+      function normalizeSeries(values) {
+        if (!values.length) return [];
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        if (max <= min) return values.map(() => 0.5);
+        return values.map(v => (v - min) / (max - min));
+      }
+
+      function renderQualityBadges(quality) {
+        const el = document.getElementById("qualityBadges");
+        const badges = [
+          `tracks: ${quality.tracks_count ?? 0}`,
+          `harmonic: ${Math.round((quality.harmonic_compatibility_rate ?? 0) * 100)}%`,
+          `bpm delta: ${(quality.mean_adjacent_bpm_delta ?? 0).toFixed(2)}`,
+          `artist repeat: ${Math.round((quality.adjacent_artist_repeat_rate ?? 0) * 100)}%`
+        ];
+        el.innerHTML = badges.map(b => `<span class="badge">${b}</span>`).join("");
+      }
+
+      function renderGenerationDiagnostics(data) {
+        const el = document.getElementById("generationDiagnostics");
+        const d = data && data.generation_diagnostics ? data.generation_diagnostics : null;
+        if (!d) {
+          el.textContent = "";
+          return;
+        }
+        const r = d.reject_counts || {};
+        const parts = [
+          `generated ${d.generated_count ?? 0}/${d.requested_limit ?? 0}`,
+          `cache_used=${d.cache_used ? "yes" : "no"}`,
+          `cache_candidates=${d.cache_candidate_count ?? 0}`,
+          `rejected: min_transition=${r.min_transition_score ?? 0}`,
+          `flat_band=${r.energy_band_flat ?? 0}`,
+          `warmup_band=${r.energy_band_warmup ?? 0}`,
+          `cooldown_band=${r.energy_band_cooldown ?? 0}`
+        ];
+        if (d.cache_fallback_applied) parts.push("cache_fallback=full_recompute");
+        if (d.stopped_early) parts.push(`stopped_early_at=${d.stop_position ?? "?"}`);
+        el.textContent = parts.join(" | ");
+      }
+
+      function renderPlaylistGraph(data, options) {
+        const canvas = document.getElementById("playlistGraph");
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const tracks = (data && data.tracks) ? data.tracks : [];
+        if (!tracks.length) {
+          ctx.fillStyle = "#aaa";
+          ctx.fillText("No playlist data to visualize", 20, 24);
+          return;
+        }
+
+        const pad = { l: 40, r: 20, t: 20, b: 30 };
+        const w = canvas.width - pad.l - pad.r;
+        const h = canvas.height - pad.t - pad.b;
+
+        ctx.strokeStyle = "#2a2a2a";
+        ctx.strokeRect(pad.l, pad.t, w, h);
+
+        const n = tracks.length;
+        const xAt = i => pad.l + (i * (w / Math.max(1, n - 1)));
+        const yAtNorm = norm => pad.t + (1 - norm) * h;
+
+        const target = tracks.map(t => (t.reason && typeof t.reason.energy_curve_target === "number") ? t.reason.energy_curve_target : 0.5);
+        const actual = tracks.map(t => (typeof t.energy === "number" ? t.energy : 0.0));
+        const scoreNorm = normalizeSeries(tracks.map(t => (typeof t.score === "number" ? t.score : 0.0)));
+        const bpmNorm = normalizeSeries(tracks.map(t => (typeof t.bpm === "number" ? t.bpm : 0.0)));
+        const transition = tracks.map(t => (t.reason && typeof t.reason.transition_score === "number") ? t.reason.transition_score : 0.0);
+        const curveFit = tracks.map(t => {
+          const d = (t.reason && typeof t.reason.energy_curve_deviation === "number") ? t.reason.energy_curve_deviation : 1.0;
+          return Math.max(0, 1 - d);
+        });
+        const harmonic = tracks.map(t => (t.reason && typeof t.reason.transition_harmonic_bonus === "number") ? t.reason.transition_harmonic_bonus : 0.0);
+
+        const targetPts = target.map((v, i) => ({ x: xAt(i), y: yAtNorm(v) }));
+        const actualPts = actual.map((v, i) => ({ x: xAt(i), y: yAtNorm(v) }));
+        const scorePts = scoreNorm.map((v, i) => ({ x: xAt(i), y: yAtNorm(v) }));
+        const bpmPts = bpmNorm.map((v, i) => ({ x: xAt(i), y: yAtNorm(v) }));
+        const transitionPts = transition.map((v, i) => ({ x: xAt(i), y: yAtNorm(v) }));
+        const curveFitPts = curveFit.map((v, i) => ({ x: xAt(i), y: yAtNorm(v) }));
+        const harmonicPts = harmonic.map((v, i) => ({ x: xAt(i), y: yAtNorm(v) }));
+
+        if (document.getElementById("showTarget").checked) drawSeries(ctx, targetPts, "#3fb950");
+        if (document.getElementById("showEnergy").checked) drawSeries(ctx, actualPts, "#58a6ff");
+        if (document.getElementById("showScore").checked) drawSeries(ctx, scorePts, "#ff9f43");
+        if (document.getElementById("showBpm").checked) drawSeries(ctx, bpmPts, "#a371f7");
+        if (document.getElementById("showTransition").checked) drawSeries(ctx, transitionPts, "#f2cc60");
+        if (document.getElementById("showCurveFit").checked) drawSeries(ctx, curveFitPts, "#39c5bb");
+        if (document.getElementById("showHarmonic").checked) drawSeries(ctx, harmonicPts, "#ff7eb6");
+
+        ctx.fillStyle = "#ff5f56";
+        tracks.forEach((t, i) => {
+          const tr = t.reason && typeof t.reason.transition_score === "number" ? t.reason.transition_score : 1.0;
+          if (tr < 0.45) {
+            const x = xAt(i);
+            const y = yAtNorm(actual[i] || 0.0);
+            ctx.beginPath();
+            ctx.arc(x, y, 4, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        });
+
+        ctx.fillStyle = "#777";
+        ctx.fillText("1", pad.l - 2, canvas.height - 8);
+        ctx.fillText(String(n), canvas.width - 16, canvas.height - 8);
+
+        lastGraphMeta = { tracks, pad, w, h, n };
+      }
+
+      function setupGraphHover() {
+        const canvas = document.getElementById("playlistGraph");
+        const tooltip = document.getElementById("graphTooltip");
+        canvas.addEventListener("mousemove", (event) => {
+          if (!lastGraphMeta || !lastGraphMeta.tracks || !lastGraphMeta.tracks.length) return;
+          const rect = canvas.getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const { tracks, pad, w, n } = lastGraphMeta;
+          if (x < pad.l || x > pad.l + w) return;
+          const relative = (x - pad.l) / Math.max(1, w);
+          const idx = Math.max(0, Math.min(n - 1, Math.round(relative * (n - 1))));
+          const t = tracks[idx];
+          const title = t.title || "Unknown Title";
+          const artist = t.artist || "Unknown Artist";
+          const bpm = (typeof t.bpm === "number" ? t.bpm : 0).toFixed(2);
+          const energy = (typeof t.energy === "number" ? t.energy : 0).toFixed(3);
+          const score = (typeof t.score === "number" ? t.score : 0).toFixed(3);
+          const tr = (t.reason && typeof t.reason.transition_score === "number" ? t.reason.transition_score : 0).toFixed(3);
+          tooltip.textContent = `#${idx + 1} ${artist} - ${title} | BPM ${bpm} | Energy ${energy} | Score ${score} | Transition ${tr}`;
+        });
+        canvas.addEventListener("mouseleave", () => {
+          tooltip.textContent = "Hover chart to inspect track details.";
+        });
+      }
+
+      function downloadM3U() {
+        const playlistId = document.getElementById("playlistId").value.trim();
+        if (!playlistId) {
+          document.getElementById("playlistOut").textContent = "Missing playlist id";
+          return;
+        }
+        window.open(`${API}/playlists/${playlistId}/export.m3u`, "_blank");
+      }
+
+      function downloadJSON() {
+        const playlistId = document.getElementById("playlistId").value.trim();
+        if (!playlistId) {
+          document.getElementById("playlistOut").textContent = "Missing playlist id";
+          return;
+        }
+        window.open(`${API}/playlists/${playlistId}/export.json`, "_blank");
+      }
+
+      function downloadM3U8() {
+        const playlistId = document.getElementById("playlistId").value.trim();
+        if (!playlistId) {
+          document.getElementById("playlistOut").textContent = "Missing playlist id";
+          return;
+        }
+        window.open(`${API}/playlists/${playlistId}/export.m3u8`, "_blank");
+      }
+
+      loadSavedPath();
+      loadPresets();
+      loadTrackStatus();
+      setupGraphHover();
+      bindSlider("limit", "limitValue");
+      bindSlider("diversity", "diversityValue", (v) => Number(v).toFixed(2));
+      bindSlider("artistCooldown", "artistCooldownValue");
+      bindSlider("albumCooldown", "albumCooldownValue");
+      bindSlider("maxBpmJump", "maxBpmJumpValue");
+      bindSlider("minTransitionScore", "minTransitionScoreValue", (v) => Number(v).toFixed(2));
+      bindSlider("temperature", "temperatureValue", (v) => Number(v).toFixed(2));
+      bindSlider("historyWindow", "historyWindowValue");
+      bindSlider("historyPenalty", "historyPenaltyValue", (v) => Number(v).toFixed(2));
+      document.getElementById("profile").addEventListener("change", () => {
+        const profile = document.getElementById("profile").value;
+        const presetValue = `builtin:${profile}`;
+        const presetEl = document.getElementById("generationPreset");
+        if (presetEl.querySelector(`option[value="${presetValue}"]`)) {
+          presetEl.value = presetValue;
+        }
+        applyProfileDefaults();
+        scheduleRealtimeGenerate();
+      });
+      document.getElementById("curve").addEventListener("change", scheduleRealtimeGenerate);
+      document.getElementById("strictConstraints").addEventListener("change", scheduleRealtimeGenerate);
+      document.getElementById("minBpm").addEventListener("input", scheduleRealtimeGenerate);
+      document.getElementById("maxBpm").addEventListener("input", scheduleRealtimeGenerate);
+      document.getElementById("showEnergy").addEventListener("change", () => { if (lastPlaylistData) renderPlaylistGraph(lastPlaylistData); });
+      document.getElementById("showTarget").addEventListener("change", () => { if (lastPlaylistData) renderPlaylistGraph(lastPlaylistData); });
+      document.getElementById("showScore").addEventListener("change", () => { if (lastPlaylistData) renderPlaylistGraph(lastPlaylistData); });
+      document.getElementById("showBpm").addEventListener("change", () => { if (lastPlaylistData) renderPlaylistGraph(lastPlaylistData); });
+      document.getElementById("showTransition").addEventListener("change", () => { if (lastPlaylistData) renderPlaylistGraph(lastPlaylistData); });
+      document.getElementById("showCurveFit").addEventListener("change", () => { if (lastPlaylistData) renderPlaylistGraph(lastPlaylistData); });
+      document.getElementById("showHarmonic").addEventListener("change", () => { if (lastPlaylistData) renderPlaylistGraph(lastPlaylistData); });
+      document.getElementById("showNotAnalyzedTracks").addEventListener("change", () => { trackPage = 1; loadTrackStatus(); });
+      document.getElementById("showAnalyzedTracks").addEventListener("change", () => { trackPage = 1; loadTrackStatus(); });
+      document.getElementById("trackSearch").addEventListener("input", () => { trackPage = 1; loadTrackStatus(); });
+      document.getElementById("generationPreset").addEventListener("change", () => {
+        applySelectedGenerationPreset();
+        scheduleRealtimeGenerate();
+      });
+      loadGenerationPresetOptions();
+      document.getElementById("generationPreset").value = "builtin:balanced";
+      applySelectedGenerationPreset();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg[binary]
+pydantic-settings
+redis
+rq
+mutagen

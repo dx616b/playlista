@@ -1,0 +1,3 @@
+ALTER TABLE track_features_norm
+  ADD COLUMN IF NOT EXISTS spectral_flux DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS dynamic_complexity DOUBLE PRECISION;
