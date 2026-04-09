@@ -7,7 +7,7 @@
     <style>
       body { font-family: Arial, sans-serif; margin: 24px; background: #111; color: #eee; }
       .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
-      input, button, select { padding: 8px; border-radius: 6px; border: 1px solid #444; background: #1c1c1c; color: #eee; }
+      input, button, select, textarea { padding: 8px; border-radius: 6px; border: 1px solid #444; background: #1c1c1c; color: #eee; }
       button { cursor: pointer; }
       pre { background: #1c1c1c; border: 1px solid #333; padding: 12px; border-radius: 8px; overflow: auto; }
       .card { border: 1px solid #333; border-radius: 8px; padding: 12px; margin-top: 12px; }
@@ -34,12 +34,11 @@
     <div class="card">
       <h3>Library</h3>
       <div class="row">
-        <input id="scanPath" placeholder="/music or /music/A,/music/B" />
-        <select id="scanPreset"></select>
-        <button onclick="useSelectedPreset()">Use Preset</button>
         <button onclick="scanLibrary()">Scan</button>
         <button onclick="enqueueAnalysis()">Enqueue Analysis</button>
+        <button id="analysisWatchBtn" onclick="toggleAnalysisWatch()">Start Watch</button>
       </div>
+      <div class="muted">Uses paths from env (`MUSIC_ROOTS`, `SCAN_PRESETS`, `MUSIC_ROOT`).</div>
       <pre id="libraryOut"></pre>
     </div>
 
@@ -51,6 +50,7 @@
         <label><input id="showAnalyzedTracks" type="checkbox" checked /> analyzed</label>
         <label><input id="showNotAnalyzedTracks" type="checkbox" checked /> not analyzed</label>
         <input id="trackSearch" placeholder="search title/artist/path" />
+        <input id="trackGenre" placeholder="genre filter" />
       </div>
       <div class="row">
         <button onclick="changeTrackPage(-1)">Prev</button>
@@ -158,6 +158,14 @@
           <input id="historyPenalty" type="range" min="0" max="1" step="0.01" value="0.12" />
           <span class="value" id="historyPenaltyValue">0.12</span>
         </div>
+        <div class="field">
+          <label title="How strongly to keep same/similar genres together">Genre Mode</label>
+          <select id="genreMode">
+            <option value="strict">strict</option>
+            <option value="balanced" selected>balanced</option>
+            <option value="open">open</option>
+          </select>
+        </div>
         <div class="field"><label title="Stop early if no track matches constraints instead of forcing limit">Strict Constraints</label><input id="strictConstraints" type="checkbox" /></div>
         <div class="field"><label title="Auto-regenerate when controls change">Real-time Mode</label><input id="realtimeMode" type="checkbox" /></div>
         </div>
@@ -191,6 +199,7 @@
       let lastPlaylistData = null;
       let lastGraphMeta = null;
       let realtimeTimer = null;
+      let analysisWatchTimer = null;
       let generating = false;
       let trackCatalog = [];
       let manualTrackIds = [];
@@ -202,11 +211,11 @@
       let playlistJsonVisible = false;
       const CUSTOM_PRESETS_KEY = "playlista.customPresets.v1";
       const BUILTIN_PRESETS = {
-        balanced: { profile: "balanced", target_energy_curve: "flat", diversity: 0.30, artist_cooldown: 2, album_cooldown: 1, max_bpm_jump: 18.0, min_transition_score: 0.55, temperature: 0.03, history_window: 3, history_penalty: 0.12, strict_constraints: false },
-        focus: { profile: "focus", target_energy_curve: "flat", diversity: 0.20, artist_cooldown: 3, album_cooldown: 2, max_bpm_jump: 12.0, min_transition_score: 0.62, temperature: 0.02, history_window: 4, history_penalty: 0.14, strict_constraints: false },
-        workout: { profile: "workout", target_energy_curve: "warmup", diversity: 0.40, artist_cooldown: 2, album_cooldown: 1, max_bpm_jump: 22.0, min_transition_score: 0.50, temperature: 0.05, history_window: 3, history_penalty: 0.10, strict_constraints: false },
-        chill: { profile: "chill", target_energy_curve: "cooldown", diversity: 0.25, artist_cooldown: 3, album_cooldown: 2, max_bpm_jump: 10.0, min_transition_score: 0.65, temperature: 0.02, history_window: 5, history_penalty: 0.16, strict_constraints: false },
-        drive: { profile: "drive", target_energy_curve: "peak", diversity: 0.35, artist_cooldown: 2, album_cooldown: 1, max_bpm_jump: 16.0, min_transition_score: 0.58, temperature: 0.04, history_window: 3, history_penalty: 0.12, strict_constraints: false }
+        balanced: { profile: "balanced", target_energy_curve: "flat", diversity: 0.30, artist_cooldown: 2, album_cooldown: 1, max_bpm_jump: 18.0, min_transition_score: 0.55, temperature: 0.03, history_window: 3, history_penalty: 0.12, genre_mode: "balanced", strict_constraints: false },
+        focus: { profile: "focus", target_energy_curve: "flat", diversity: 0.20, artist_cooldown: 3, album_cooldown: 2, max_bpm_jump: 12.0, min_transition_score: 0.62, temperature: 0.02, history_window: 4, history_penalty: 0.14, genre_mode: "strict", strict_constraints: false },
+        workout: { profile: "workout", target_energy_curve: "warmup", diversity: 0.40, artist_cooldown: 2, album_cooldown: 1, max_bpm_jump: 22.0, min_transition_score: 0.50, temperature: 0.05, history_window: 3, history_penalty: 0.10, genre_mode: "open", strict_constraints: false },
+        chill: { profile: "chill", target_energy_curve: "cooldown", diversity: 0.25, artist_cooldown: 3, album_cooldown: 2, max_bpm_jump: 10.0, min_transition_score: 0.65, temperature: 0.02, history_window: 5, history_penalty: 0.16, genre_mode: "strict", strict_constraints: false },
+        drive: { profile: "drive", target_energy_curve: "peak", diversity: 0.35, artist_cooldown: 2, album_cooldown: 1, max_bpm_jump: 16.0, min_transition_score: 0.58, temperature: 0.04, history_window: 3, history_penalty: 0.12, genre_mode: "balanced", strict_constraints: false }
       };
       const PROFILE_DEFAULT_CURVE = {
         balanced: "flat",
@@ -263,6 +272,7 @@
         if (typeof values.variation_seed === "number") document.getElementById("variationSeed").value = values.variation_seed;
         if (typeof values.history_window === "number") document.getElementById("historyWindow").value = values.history_window;
         if (typeof values.history_penalty === "number") document.getElementById("historyPenalty").value = values.history_penalty;
+        if (values.genre_mode) document.getElementById("genreMode").value = values.genre_mode;
         if (typeof values.strict_constraints === "boolean") document.getElementById("strictConstraints").checked = values.strict_constraints;
         ["limit","diversity","artistCooldown","albumCooldown","maxBpmJump","minTransitionScore","temperature","historyWindow","historyPenalty"].forEach((id) => {
           const input = document.getElementById(id);
@@ -288,6 +298,7 @@
           variation_seed: document.getElementById("variationSeed").value ? parseInt(document.getElementById("variationSeed").value, 10) : null,
           history_window: parseInt(document.getElementById("historyWindow").value || "3", 10),
           history_penalty: parseFloat(document.getElementById("historyPenalty").value || "0.12"),
+          genre_mode: document.getElementById("genreMode").value || "balanced",
           strict_constraints: document.getElementById("strictConstraints").checked
         };
       }
@@ -328,33 +339,6 @@
         btn.textContent = open ? "Custom (open)" : "Custom";
       }
 
-      function savePath() {
-        const value = document.getElementById("scanPath").value.trim();
-        if (value) localStorage.setItem("playlista.scanPath", value);
-      }
-
-      function loadSavedPath() {
-        const saved = localStorage.getItem("playlista.scanPath");
-        if (saved) document.getElementById("scanPath").value = saved;
-      }
-
-      async function loadPresets() {
-        const presetEl = document.getElementById("scanPreset");
-        presetEl.innerHTML = "";
-        try {
-          const res = await fetch(`${API}/library/presets`);
-          const data = await res.json();
-          const presets = data.presets || [];
-          for (const p of presets) {
-            const opt = document.createElement("option");
-            opt.value = p;
-            opt.textContent = p;
-            presetEl.appendChild(opt);
-          }
-        } catch (err) {
-          // no-op for now
-        }
-      }
 
       function formatTrackLabel(t) {
         const title = t.title || "Unknown Title";
@@ -387,6 +371,7 @@
           const title = (t.title || "Unknown Title").replace(/</g, "&lt;").replace(/>/g, "&gt;");
           const artist = (t.artist || "Unknown Artist").replace(/</g, "&lt;").replace(/>/g, "&gt;");
           const album = (t.album || "-").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          const genre = (t.genre || "-").replace(/</g, "&lt;").replace(/>/g, "&gt;");
           const idShort = t.id.slice(0, 8);
           const status = t.analyzed ? "analyzed" : "not analyzed";
           const inManual = manualTrackIds.includes(t.id) ? "yes" : "no";
@@ -406,6 +391,7 @@
             <td>${artist}</td>
             <td>${title}</td>
             <td>${album}</td>
+            <td>${genre}</td>
             <td>${status}</td>
             <td>${bpm}</td>
             <td>${energy}</td>
@@ -428,6 +414,7 @@
                 <th><button onclick="setTrackSort('artist')">Artist</button></th>
                 <th><button onclick="setTrackSort('title')">Title</button></th>
                 <th><button onclick="setTrackSort('album')">Album</button></th>
+                <th><button onclick="setTrackSort('genre')">Genre</button></th>
                 <th><button onclick="setTrackSort('status')">Status</button></th>
                 <th><button onclick="setTrackSort('bpm')">BPM</button></th>
                 <th><button onclick="setTrackSort('energy')">Energy</button></th>
@@ -453,6 +440,7 @@
         const showA = document.getElementById("showAnalyzedTracks").checked;
         const showN = document.getElementById("showNotAnalyzedTracks").checked;
         const q = document.getElementById("trackSearch").value.trim();
+        const genre = document.getElementById("trackGenre").value.trim();
         let analyzed = "all";
         if (showA && !showN) analyzed = "yes";
         if (!showA && showN) analyzed = "no";
@@ -464,6 +452,7 @@
           analyzed,
         });
         if (q) params.set("q", q);
+        if (genre) params.set("genre", genre);
         const res = await fetch(`${API}/tracks/status?${params.toString()}`);
         const data = await res.json();
         trackCatalog = data.tracks || [];
@@ -590,41 +579,129 @@
         renderManualList();
       }
 
-      function useSelectedPreset() {
-        const presetEl = document.getElementById("scanPreset");
-        const value = presetEl.value;
-        if (value) {
-          document.getElementById("scanPath").value = value;
-          savePath();
+      async function fetchJsonWithMeta(url, options) {
+        const started = Date.now();
+        let res;
+        try {
+          res = await fetch(url, options);
+        } catch (err) {
+          const elapsed = Date.now() - started;
+          return {
+            ok: false,
+            status: 0,
+            elapsed_ms: elapsed,
+            data: { detail: `Network error: ${err && err.message ? err.message : String(err)}` }
+          };
+        }
+        let data = {};
+        try {
+          data = await res.json();
+        } catch {
+          data = { detail: "Non-JSON response from API." };
+        }
+        return {
+          ok: res.ok,
+          status: res.status,
+          elapsed_ms: Date.now() - started,
+          data
+        };
+      }
+
+      async function fetchAnalysisStatusSummary() {
+        const result = await fetchJsonWithMeta(`${API}/analysis/progress`);
+        const data = result.data && typeof result.data === "object" ? result.data : {};
+        const counts = data.counts && typeof data.counts === "object" ? data.counts : {};
+        const summary = {
+          total: Number(counts.total || 0),
+          queued: Number(counts.queued || 0),
+          running: Number(counts.running || 0),
+          completed: Number(counts.completed || 0),
+          failed: Number(counts.failed || 0),
+          remaining: Number(data.remaining || 0),
+          avg_seconds_per_track: Number(data.avg_seconds_per_track || 0),
+          eta_seconds: Number(data.eta_seconds || 0)
+        };
+        return { ok: result.ok, status: result.status, summary };
+      }
+
+      async function refreshAnalysisWatchOutput() {
+        const out = document.getElementById("libraryOut");
+        const jobs = await fetchAnalysisStatusSummary();
+        out.textContent = JSON.stringify(
+          {
+            ok: jobs.ok,
+            status: jobs.status,
+            analysis_jobs_status: jobs.summary,
+            watched_at: new Date().toISOString()
+          },
+          null,
+          2
+        );
+        const s = jobs.summary || {};
+        const active = Number(s.remaining || 0);
+        if (analysisWatchTimer && active === 0 && (s.total || 0) > 0) {
+          clearInterval(analysisWatchTimer);
+          analysisWatchTimer = null;
+          document.getElementById("analysisWatchBtn").textContent = "Start Watch";
         }
       }
 
-      async function scanLibrary() {
-        const raw = document.getElementById("scanPath").value || "";
-        const roots = raw
-          .split(/[,\n;]+/)
-          .map((v) => v.trim())
-          .filter(Boolean);
-        const root_path = roots.length === 1 ? roots[0] : null;
-        const root_paths = roots.length > 1 ? roots : null;
-        savePath();
-        const res = await fetch(`${API}/library/scan`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ root_path, root_paths })
-        });
-        const data = await res.json();
-        document.getElementById("libraryOut").textContent = JSON.stringify(data, null, 2);
+      function toggleAnalysisWatch() {
+        const btn = document.getElementById("analysisWatchBtn");
+        if (analysisWatchTimer) {
+          clearInterval(analysisWatchTimer);
+          analysisWatchTimer = null;
+          btn.textContent = "Start Watch";
+          return;
+        }
+        btn.textContent = "Stop Watch";
+        refreshAnalysisWatchOutput();
+        analysisWatchTimer = setInterval(refreshAnalysisWatchOutput, 2500);
       }
 
-      async function enqueueAnalysis() {
-        const res = await fetch(`${API}/analysis/enqueue`, {
+      async function scanLibrary() {
+        const out = document.getElementById("libraryOut");
+        out.textContent = "Scanning library...";
+        const result = await fetchJsonWithMeta(`${API}/library/scan`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({})
         });
-        const data = await res.json();
-        document.getElementById("libraryOut").textContent = JSON.stringify(data, null, 2);
+        out.textContent = JSON.stringify(
+          {
+            ok: result.ok,
+            status: result.status,
+            elapsed_ms: result.elapsed_ms,
+            ...result.data
+          },
+          null,
+          2
+        );
+      }
+
+      async function enqueueAnalysis() {
+        const out = document.getElementById("libraryOut");
+        out.textContent = "Enqueuing analysis...";
+        const result = await fetchJsonWithMeta(`${API}/analysis/enqueue`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const jobs = await fetchAnalysisStatusSummary();
+        out.textContent = JSON.stringify(
+          {
+            ok: result.ok,
+            status: result.status,
+            elapsed_ms: result.elapsed_ms,
+            ...result.data,
+            analysis_jobs_status: jobs.summary
+          },
+          null,
+          2
+        );
+        if (!analysisWatchTimer) {
+          toggleAnalysisWatch();
+        }
       }
 
       async function generatePlaylist() {
@@ -699,6 +776,7 @@
         const badges = [
           `tracks: ${quality.tracks_count ?? 0}`,
           `harmonic: ${Math.round((quality.harmonic_compatibility_rate ?? 0) * 100)}%`,
+          `genre coherence: ${Math.round((quality.genre_coherence_rate ?? 0) * 100)}%`,
           `bpm delta: ${(quality.mean_adjacent_bpm_delta ?? 0).toFixed(2)}`,
           `artist repeat: ${Math.round((quality.adjacent_artist_repeat_rate ?? 0) * 100)}%`
         ];
@@ -715,6 +793,7 @@
         const r = d.reject_counts || {};
         const parts = [
           `generated ${d.generated_count ?? 0}/${d.requested_limit ?? 0}`,
+          `genre_mode=${d.genre_mode || "balanced"}`,
           `cache_used=${d.cache_used ? "yes" : "no"}`,
           `cache_candidates=${d.cache_candidate_count ?? 0}`,
           `rejected: min_transition=${r.min_transition_score ?? 0}`,
@@ -848,8 +927,6 @@
         window.open(`${API}/playlists/${playlistId}/export.m3u8`, "_blank");
       }
 
-      loadSavedPath();
-      loadPresets();
       loadTrackStatus();
       setupGraphHover();
       bindSlider("limit", "limitValue");
@@ -872,6 +949,7 @@
         scheduleRealtimeGenerate();
       });
       document.getElementById("curve").addEventListener("change", scheduleRealtimeGenerate);
+      document.getElementById("genreMode").addEventListener("change", scheduleRealtimeGenerate);
       document.getElementById("strictConstraints").addEventListener("change", scheduleRealtimeGenerate);
       document.getElementById("minBpm").addEventListener("input", scheduleRealtimeGenerate);
       document.getElementById("maxBpm").addEventListener("input", scheduleRealtimeGenerate);
@@ -885,6 +963,7 @@
       document.getElementById("showNotAnalyzedTracks").addEventListener("change", () => { trackPage = 1; loadTrackStatus(); });
       document.getElementById("showAnalyzedTracks").addEventListener("change", () => { trackPage = 1; loadTrackStatus(); });
       document.getElementById("trackSearch").addEventListener("input", () => { trackPage = 1; loadTrackStatus(); });
+      document.getElementById("trackGenre").addEventListener("input", () => { trackPage = 1; loadTrackStatus(); });
       document.getElementById("generationPreset").addEventListener("change", () => {
         applySelectedGenerationPreset();
         scheduleRealtimeGenerate();

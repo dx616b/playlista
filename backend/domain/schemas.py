@@ -31,6 +31,9 @@ class PlaylistGenerateRequest(BaseModel):
     history_window: int = Field(default=3, ge=0, le=50)
     history_penalty: float = Field(default=0.12, ge=0.0, le=1.0)
     strict_constraints: bool = False
+    genre_mode: str = Field(default="balanced", pattern="^(strict|balanced|open)$")
+    track_feedback: dict[str, float] | None = None
+    artist_feedback: dict[str, float] | None = None
 
 
 class PlaylistManualRequest(BaseModel):
@@ -52,5 +55,6 @@ class TrackOut(BaseModel):
     title: str | None
     artist: str | None
     album: str | None
+    genre: str | None
     duration_seconds: float | None
     created_at: datetime

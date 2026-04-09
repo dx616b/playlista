@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from statistics import mean, pvariance
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -28,8 +28,25 @@ def extract_features(path: str) -> dict:
 
     loader = es.MonoLoader(filename=path, sampleRate=44100)
     audio = loader()
-    rhythm = es.RhythmExtractor2013(method="multifeature")
-    bpm, _, _, _, _ = rhythm(audio)
+    # Tempo extraction on very long files can fail in Essentia internals.
+    # Use a capped analysis window for BPM algorithms only.
+    rhythm_audio = audio[: 44100 * 600] if len(audio) > 44100 * 600 else audio
+    bpm = 0.0
+    # BPM extraction fallback chain:
+    # 1) RhythmExtractor2013 (best quality for most files)
+    # 2) BeatTrackerDegara (robust fallback)
+    # 3) Neutral default 0.0 if both fail
+    try:
+        rhythm = es.RhythmExtractor2013(method="multifeature")
+        bpm, _, _, _, _ = rhythm(rhythm_audio)
+    except Exception:
+        try:
+            if hasattr(es, "BeatTrackerDegara"):
+                bpm, _ = es.BeatTrackerDegara()(rhythm_audio)
+            else:
+                bpm = 0.0
+        except Exception:
+            bpm = 0.0
     key_extractor = es.KeyExtractor()
     key, scale, key_strength = key_extractor(audio)
     loudness = es.Loudness()(audio)
@@ -208,7 +225,7 @@ def run_track_analysis(db: Session, track_id, analysis_version: str) -> dict:
     )
     raw_stmt = raw_stmt.on_conflict_do_update(
         index_elements=[TrackFeaturesRaw.track_id, TrackFeaturesRaw.analysis_version],
-        set_={"features_json": features},
+        set_={"features_json": features, "updated_at": func.now()},
     )
     db.execute(raw_stmt)
     db.commit()

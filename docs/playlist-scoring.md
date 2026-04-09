@@ -15,6 +15,10 @@ Additional sequence logic combines:
 - Camelot compatibility bonus for harmonic mixing
 - BPM and energy continuity penalties on transitions
 - key-confidence weighting and onset continuity for transition stability
+- genre continuity weighting from mutagen tags (soft preference, not hard lock)
+- stratified candidate pool (top-score + bridge + artist-diverse slices)
+- global artist/album caps to avoid over-representation
+- optional feedback hooks (`track_feedback`, `artist_feedback`) for personalized biasing
 
 Each selected track stores reason codes:
 
@@ -26,11 +30,14 @@ Each selected track stores reason codes:
 - `energy_curve_target`
 - `energy_curve_deviation`
 - `transition_harmonic_bonus`
+- `transition_genre_score`
 - `transition_bpm_delta`
 - `transition_energy_delta`
 - `transition_score`
 - `transition_prev_camelot`
 - `transition_cur_camelot`
+- `transition_prev_genre`
+- `transition_cur_genre`
 
 ## Quality Metrics Endpoint
 
@@ -42,3 +49,4 @@ Each selected track stores reason codes:
 - `mean_adjacent_timbre_delta`
 - `adjacent_artist_repeat_rate`
 - `artist_diversity_ratio`
+- `genre_coherence_rate`

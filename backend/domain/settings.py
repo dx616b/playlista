@@ -23,7 +23,8 @@ def get_scan_presets() -> list[str]:
         values.extend([p.strip() for p in settings.music_roots.split(",") if p.strip()])
     if settings.scan_presets:
         values.extend([p.strip() for p in settings.scan_presets.split(",") if p.strip()])
-    if settings.music_root:
+    # Only use fallback MUSIC_ROOT when no explicit roots/presets were provided.
+    if not values and settings.music_root:
         values.append(settings.music_root)
     # keep order, remove duplicates
     return list(dict.fromkeys(values))

@@ -36,7 +36,9 @@ services:
       PYTHONPATH: /app
     volumes:
       - ..:/app
-      - ${MUSIC_ROOT:-/tmp/music}:${MUSIC_ROOT:-/tmp/music}:ro
+      - /srv:/srv:ro
+      - /mnt:/mnt:ro
+      - /media:/media:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -56,6 +58,9 @@ services:
     volumes:
       - ..:/app
       - ${MUSIC_ROOT:-/tmp/music}:${MUSIC_ROOT:-/tmp/music}:ro
+      - /srv:/srv:ro
+      - /mnt:/mnt:ro
+      - /media:/media:ro
     depends_on:
       postgres:
         condition: service_healthy

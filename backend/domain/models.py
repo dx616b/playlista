@@ -20,6 +20,7 @@ class Track(Base):
     title: Mapped[str | None] = mapped_column(Text)
     artist: Mapped[str | None] = mapped_column(Text)
     album: Mapped[str | None] = mapped_column(Text)
+    genre: Mapped[str | None] = mapped_column(Text)
     duration_seconds: Mapped[float | None] = mapped_column(Float)
     sample_rate: Mapped[int | None] = mapped_column(Integer)
     channels: Mapped[int | None] = mapped_column(Integer)
@@ -54,6 +55,9 @@ class TrackFeaturesRaw(Base):
     analysis_version: Mapped[str] = mapped_column(String(32), nullable=False)
     features_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 class TrackFeaturesNorm(Base):

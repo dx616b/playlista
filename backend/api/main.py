@@ -87,6 +87,8 @@ def library_scan(payload: ScanRequest, db: Session = Depends(get_db)):
     if payload.root_path and payload.root_path.strip():
         roots.append(payload.root_path.strip())
     if not roots:
+        roots = get_scan_presets()
+    if not roots:
         roots = [get_default_music_root()]
     roots = list(dict.fromkeys(roots))
 
@@ -97,17 +99,25 @@ def library_scan(payload: ScanRequest, db: Session = Depends(get_db)):
             return result
 
         per_root: list[dict] = []
+        root_errors: list[dict] = []
         totals = {"discovered": 0, "created": 0, "updated": 0, "skipped": 0}
         for root in roots:
-            result = scan_library(db, root)
-            per_root.append({"root_path": root, **result})
-            for key in totals:
-                totals[key] += int(result.get(key, 0))
+            try:
+                result = scan_library(db, root)
+                per_root.append({"root_path": root, **result})
+                for key in totals:
+                    totals[key] += int(result.get(key, 0))
+            except ValueError as exc:
+                root_errors.append({"root_path": root, "detail": str(exc)})
+
+        if not per_root and root_errors:
+            raise HTTPException(status_code=400, detail=f"All scan roots invalid: {[e['root_path'] for e in root_errors]}")
 
         return {
             **totals,
             "roots": roots,
             "per_root": per_root,
+            "root_errors": root_errors,
         }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -129,10 +139,11 @@ def list_tracks_status(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=200),
     q: str | None = None,
+    genre: str | None = None,
     analyzed: str = Query(default="all", pattern="^(all|yes|no)$"),
     sort_by: str = Query(
         default="artist",
-        pattern="^(id|artist|title|album|status|bpm|energy|key_strength|spectral_flux|dynamic_complexity|created_at)$",
+        pattern="^(id|artist|title|album|genre|status|bpm|energy|key_strength|spectral_flux|dynamic_complexity|created_at)$",
     ),
     sort_dir: str = Query(default="asc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
@@ -161,6 +172,11 @@ def list_tracks_status(
         )
         base = base.where(text_filter)
         count_base = count_base.where(text_filter)
+    if genre:
+        like_genre = f"%{genre}%"
+        genre_filter = Track.genre.ilike(like_genre)
+        base = base.where(genre_filter)
+        count_base = count_base.where(genre_filter)
 
     if analyzed == "yes":
         base = base.where(TrackFeaturesNorm.track_id.is_not(None))
@@ -174,6 +190,7 @@ def list_tracks_status(
         "artist": func.lower(Track.artist),
         "title": func.lower(Track.title),
         "album": func.lower(Track.album),
+        "genre": func.lower(Track.genre),
         "status": TrackFeaturesNorm.track_id,
         "bpm": TrackFeaturesNorm.bpm,
         "energy": TrackFeaturesNorm.energy,
@@ -211,6 +228,7 @@ def list_tracks_status(
                 "title": track.title,
                 "artist": track.artist,
                 "album": track.album,
+                "genre": track.genre,
                 "file_path": track.file_path,
                 "duration_seconds": track.duration_seconds,
                 "analyzed": norm is not None,
@@ -262,7 +280,7 @@ def enqueue_analysis(payload: AnalysisEnqueueRequest, db: Session = Depends(get_
                 (TrackFeaturesRaw.track_id == Track.id)
                 & (TrackFeaturesRaw.analysis_version == settings.analysis_version),
             )
-            .where((TrackFeaturesRaw.id.is_(None)) | (Track.updated_at > TrackFeaturesRaw.created_at))
+            .where((TrackFeaturesRaw.id.is_(None)) | (Track.updated_at > TrackFeaturesRaw.updated_at))
         ).all()
         track_ids = [row[0] for row in rows]
     enqueued = 0
@@ -311,6 +329,34 @@ def get_analysis_jobs(db: Session = Depends(get_db)):
     ]
 
 
+@app.get("/analysis/progress")
+def get_analysis_progress(db: Session = Depends(get_db)):
+    grouped = db.execute(
+        select(AnalysisJob.status, func.count(AnalysisJob.id)).group_by(AnalysisJob.status)
+    ).all()
+    counts = {"queued": 0, "running": 0, "completed": 0, "failed": 0}
+    for status, count in grouped:
+        if status in counts:
+            counts[status] = int(count or 0)
+    total = sum(counts.values())
+    remaining = counts["queued"] + counts["running"]
+    avg_seconds = db.execute(
+        select(func.avg(func.extract("epoch", AnalysisJob.finished_at - AnalysisJob.started_at))).where(
+            AnalysisJob.status == "completed",
+            AnalysisJob.started_at.is_not(None),
+            AnalysisJob.finished_at.is_not(None),
+        )
+    ).scalar_one()
+    avg_seconds_per_track = float(avg_seconds or 0.0)
+    eta_seconds = float(avg_seconds_per_track * remaining) if avg_seconds_per_track > 0 else 0.0
+    return {
+        "counts": {"total": total, **counts},
+        "remaining": remaining,
+        "avg_seconds_per_track": round(avg_seconds_per_track, 3),
+        "eta_seconds": round(eta_seconds, 3),
+    }
+
+
 @app.post("/playlists/generate")
 def create_playlist(payload: PlaylistGenerateRequest, db: Session = Depends(get_db)):
     profile_defaults = {
@@ -352,7 +398,10 @@ def create_playlist(payload: PlaylistGenerateRequest, db: Session = Depends(get_
             history_window=history_window,
             history_penalty=history_penalty,
             strict_constraints=payload.strict_constraints,
+            genre_mode=payload.genre_mode,
             candidate_track_ids=None,
+            track_feedback=payload.track_feedback,
+            artist_feedback=payload.artist_feedback,
         )
         result_diag = result.setdefault("generation_diagnostics", {})
         result_diag["cache_used"] = False
@@ -449,6 +498,7 @@ def get_playlist(playlist_id: UUID, db: Session = Depends(get_db)):
                     "file_path": track.file_path,
                     "title": track.title,
                     "artist": track.artist,
+                    "genre": track.genre,
                 },
                 "features": {
                     "energy": feat.energy,

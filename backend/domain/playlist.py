@@ -60,6 +60,27 @@ CAM_MINOR = {
 }
 
 
+def _normalize_genre(genre: str | None) -> str | None:
+    if not genre:
+        return None
+    # Keep first tag when file uses "Rock;Alternative" style.
+    primary = genre.split(";")[0].split("/")[0].strip().lower()
+    return primary or None
+
+
+def _genre_transition_score(genre_a: str | None, genre_b: str | None) -> float:
+    g1 = _normalize_genre(genre_a)
+    g2 = _normalize_genre(genre_b)
+    if not g1 or not g2:
+        return 0.5
+    if g1 == g2:
+        return 1.0
+    # Soft compatibility for closely related labels.
+    if g1 in g2 or g2 in g1:
+        return 0.85
+    return 0.15
+
+
 def _bpm_score(bpm: float | None, min_bpm: float | None, max_bpm: float | None) -> float:
     if bpm is None:
         return 0.2
@@ -126,7 +147,11 @@ def _camelot_harmonic_score(cam_a: str | None, cam_b: str | None) -> float:
     return max(0.0, 0.35 - (distance * 0.04))
 
 
-def _pair_transition_score(prev: RankedTrack | None, cur: RankedTrack) -> tuple[float, dict]:
+def _pair_transition_score(
+    prev: RankedTrack | None,
+    cur: RankedTrack,
+    genre_weight: float = 0.12,
+) -> tuple[float, dict]:
     if prev is None:
         return 0.0, {"transition_base": "seed"}
     bpm_prev = prev.features.bpm or 0.0
@@ -147,24 +172,30 @@ def _pair_transition_score(prev: RankedTrack | None, cur: RankedTrack) -> tuple[
     c_cur = _camelot_key(cur.features.key, cur.features.scale)
     harmonic_bonus = _camelot_harmonic_score(c_prev, c_cur)
     key_confidence = ((cur.features.key_strength or 0.0) + (prev.features.key_strength or 0.0)) / 2.0
+    genre_score = _genre_transition_score(prev.track.genre, cur.track.genre)
 
     transition_score = (
-        harmonic_bonus * 0.24
-        + (1.0 - bpm_penalty) * 0.24
-        + (1.0 - energy_penalty) * 0.18
+        harmonic_bonus * 0.20
+        + (1.0 - bpm_penalty) * 0.22
+        + (1.0 - energy_penalty) * 0.16
         + (1.0 - flux_penalty) * 0.08
         + (1.0 - dyn_penalty) * 0.06
-        + key_confidence * 0.12
+        + key_confidence * 0.10
+        + genre_score * genre_weight
         + (1.0 - abs((cur.features.onset_rate or 0.0) - (prev.features.onset_rate or 0.0))) * 0.08
     )
     reason = {
         "transition_harmonic_bonus": round(harmonic_bonus, 4),
+        "transition_genre_score": round(genre_score, 4),
+        "transition_prev_genre": _normalize_genre(prev.track.genre),
+        "transition_cur_genre": _normalize_genre(cur.track.genre),
         "transition_bpm_delta": round(bpm_delta, 4),
         "transition_energy_delta": round(energy_delta, 4),
         "transition_flux_delta": round(flux_delta, 4),
         "transition_dynamic_delta": round(dyn_delta, 4),
         "transition_score": round(transition_score, 4),
         "transition_key_confidence": round(key_confidence, 4),
+        "transition_genre_weight": round(genre_weight, 4),
         "transition_prev_camelot": c_prev,
         "transition_cur_camelot": c_cur,
     }
@@ -193,18 +224,71 @@ def _reliability_score(item: RankedTrack) -> float:
     ks = item.features.key_strength or 0.0
     en = item.features.energy or 0.0
     bpm = item.features.bpm
-    path_l = (item.track.file_path or "").lower()
     if ks < 0.2:
         score -= 0.14
     if en < 0.03 or en > 0.97:
         score -= 0.10
     if bpm is not None and (bpm < 0.02 or bpm > 0.98):
         score -= 0.08
-    if "eastmix" in path_l:
-        score -= 0.15
-    if path_l.endswith(".mp3"):
-        score -= 0.05
     return max(0.45, score)
+
+
+def _normalize_artist_key(artist: str | None) -> str | None:
+    if not artist:
+        return None
+    value = artist.strip().lower()
+    return value or None
+
+
+def _normalize_feedback_map(raw: dict[str, float] | None) -> dict[str, float]:
+    if not raw:
+        return {}
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        if not key:
+            continue
+        out[str(key).strip().lower()] = max(-1.0, min(1.0, float(value)))
+    return out
+
+
+def _build_candidate_pool(
+    ranked: list[RankedTrack],
+    target_count: int,
+    target_energy_curve: str,
+) -> list[RankedTrack]:
+    if not ranked:
+        return []
+
+    base_pool_size = max(target_count * 8, 240) if target_energy_curve == "flat" else max(target_count * 6, 180)
+    pool_size = min(len(ranked), base_pool_size)
+    top_scored = ranked[:pool_size]
+
+    bridge_sorted = sorted(
+        ranked,
+        key=lambda r: (
+            abs((r.features.energy or 0.0) - 0.5)
+            + abs((r.features.spectral_flux or 0.0) - 0.5)
+            + abs((r.features.dynamic_complexity or 0.0) - 0.5)
+        ),
+    )
+    bridge_count = min(len(ranked), max(target_count * 3, 90))
+    bridge_tracks = bridge_sorted[:bridge_count]
+
+    artist_diverse: list[RankedTrack] = []
+    seen_artists: set[str] = set()
+    for item in ranked:
+        akey = _normalize_artist_key(item.track.artist)
+        if not akey or akey in seen_artists:
+            continue
+        seen_artists.add(akey)
+        artist_diverse.append(item)
+        if len(artist_diverse) >= max(target_count * 2, 60):
+            break
+
+    merged: dict[UUID, RankedTrack] = {}
+    for item in top_scored + bridge_tracks + artist_diverse:
+        merged[item.track.id] = item
+    return sorted(merged.values(), key=lambda r: r.score, reverse=True)
 
 
 def generate_playlist(
@@ -225,7 +309,10 @@ def generate_playlist(
     history_window: int = 3,
     history_penalty: float = 0.12,
     strict_constraints: bool = False,
+    genre_mode: str = "balanced",
     candidate_track_ids: list[UUID] | None = None,
+    track_feedback: dict[str, float] | None = None,
+    artist_feedback: dict[str, float] | None = None,
 ) -> dict:
     query = select(Track, TrackFeaturesNorm).join(TrackFeaturesNorm, Track.id == TrackFeaturesNorm.track_id)
     if candidate_track_ids:
@@ -239,6 +326,11 @@ def generate_playlist(
         seed = db.execute(select(TrackFeaturesNorm).where(TrackFeaturesNorm.track_id == seed_track_id)).scalar_one_or_none()
 
     rng = random.Random(variation_seed) if variation_seed is not None else random.Random()
+    genre_weight_map = {"strict": 0.22, "balanced": 0.12, "open": 0.05}
+    resolved_genre_mode = genre_mode if genre_mode in genre_weight_map else "balanced"
+    genre_weight = genre_weight_map[resolved_genre_mode]
+    track_feedback_map = _normalize_feedback_map(track_feedback)
+    artist_feedback_map = _normalize_feedback_map(artist_feedback)
     recent_track_ids: set[UUID] = set()
     recent_first_track_ids: set[UUID] = set()
     if history_window > 0 and history_penalty > 0:
@@ -278,6 +370,11 @@ def generate_playlist(
             + timbre_component * 0.10
             + harmonic_component * 0.15
         )
+        track_bias = track_feedback_map.get(str(track.id).lower(), 0.0)
+        artist_key = _normalize_artist_key(track.artist)
+        artist_bias = artist_feedback_map.get(artist_key, 0.0) if artist_key else 0.0
+        feedback_bonus = (track_bias * 0.22) + (artist_bias * 0.16)
+        total += feedback_bonus
         if track.id in recent_track_ids:
             total -= history_penalty
         if temperature > 0:
@@ -288,17 +385,16 @@ def generate_playlist(
             "danceability_component": round(dance_component, 4),
             "timbre_component": round(timbre_component, 4),
             "harmonic_component": round(harmonic_component, 4),
+            "feedback_track_bias": round(track_bias, 4),
+            "feedback_artist_bias": round(artist_bias, 4),
+            "feedback_bonus": round(feedback_bonus, 4),
             "history_penalty_applied": round(history_penalty if track.id in recent_track_ids else 0.0, 4),
         }
         ranked.append(RankedTrack(track=track, features=feat, score=total, reason=reason))
 
     ranked.sort(key=lambda r: r.score, reverse=True)
     target_count = min(limit, len(ranked))
-    if target_energy_curve == "flat":
-        shortlist_size = min(len(ranked), max(target_count * 6, 200))
-    else:
-        shortlist_size = min(len(ranked), max(target_count * 4, 120))
-    selected = ranked[:shortlist_size]
+    selected = _build_candidate_pool(ranked, target_count, target_energy_curve)
     ordered: list[RankedTrack] = []
     pool = selected[:]
     diagnostics = {
@@ -319,6 +415,8 @@ def generate_playlist(
             "energy_band_warmup": 0,
             "energy_band_cooldown": 0,
             "fallback_weak_transition": 0,
+            "artist_cap": 0,
+            "album_cap": 0,
         },
     }
 
@@ -419,11 +517,25 @@ def generate_playlist(
             energy_penalty_weight = 0.24
         else:
             energy_penalty_weight = 0.15
-        transition_score, _ = _pair_transition_score(prev, candidate)
+        transition_score, _ = _pair_transition_score(prev, candidate, genre_weight=genre_weight)
         recent_artists = [selected_by_id[t].track.artist for t in seq_ids[-artist_cooldown:] if selected_by_id[t].track.artist] if artist_cooldown > 0 else []
         artist_penalty = 0.20 if candidate.track.artist and candidate.track.artist in recent_artists else 0.0
         recent_albums = [selected_by_id[t].track.album for t in seq_ids[-album_cooldown:] if selected_by_id[t].track.album] if album_cooldown > 0 else []
         album_penalty = 0.12 if candidate.track.album and candidate.track.album in recent_albums else 0.0
+        artist_count = 0
+        album_count = 0
+        if candidate.track.artist:
+            artist_count = sum(1 for tid in seq_ids if (selected_by_id[tid].track.artist or "") == candidate.track.artist)
+            if artist_count >= max_artist_tracks:
+                return -1.0, False, "artist_cap"
+            if artist_count > 0:
+                artist_penalty += min(0.20, 0.05 * artist_count)
+        if candidate.track.album:
+            album_count = sum(1 for tid in seq_ids if (selected_by_id[tid].track.album or "") == candidate.track.album)
+            if album_count >= max_album_tracks:
+                return -1.0, False, "album_cap"
+            if album_count > 0:
+                album_penalty += min(0.14, 0.04 * album_count)
         bpm_jump_penalty = 0.0
         flux_delta = 0.0
         dyn_delta = 0.0
@@ -481,6 +593,8 @@ def generate_playlist(
     initial_seq = [o.track.id for o in ordered]
     beams: list[tuple[list[UUID], float]] = [(initial_seq, 0.0)]
     beam_width = 5
+    max_artist_tracks = max(1, min(6, max(2, (target_count + 7) // 8)))
+    max_album_tracks = max(1, min(4, max(1, (target_count + 11) // 12)))
     fallback_budget = max(4, target_count // 6)
     fallback_used = 0
     diagnostics["fallback_budget"] = fallback_budget
@@ -556,6 +670,13 @@ def generate_playlist(
             break
 
     diagnostics["fallback_used"] = fallback_used
+    diagnostics["max_artist_tracks"] = max_artist_tracks
+    diagnostics["max_album_tracks"] = max_album_tracks
+    diagnostics["genre_mode"] = resolved_genre_mode
+    diagnostics["genre_weight"] = genre_weight
+    diagnostics["candidate_pool_size"] = len(selected)
+    diagnostics["track_feedback_count"] = len(track_feedback_map)
+    diagnostics["artist_feedback_count"] = len(artist_feedback_map)
 
     best_seq_ids = max(beams, key=lambda x: x[1])[0] if beams else initial_seq
     ordered = [selected_by_id[tid] for tid in best_seq_ids]
@@ -625,11 +746,11 @@ def generate_playlist(
                 prev_item = ordered[i - 1]
                 cur_item = ordered[i]
                 next_item = ordered[i + 1]
-                cur_score, _ = _pair_transition_score(prev_item, cur_item)
-                next_score, _ = _pair_transition_score(cur_item, next_item)
+                cur_score, _ = _pair_transition_score(prev_item, cur_item, genre_weight=genre_weight)
+                next_score, _ = _pair_transition_score(cur_item, next_item, genre_weight=genre_weight)
                 baseline = cur_score + next_score
-                swap_score_a, _ = _pair_transition_score(prev_item, next_item)
-                swap_score_b, _ = _pair_transition_score(next_item, cur_item)
+                swap_score_a, _ = _pair_transition_score(prev_item, next_item, genre_weight=genre_weight)
+                swap_score_b, _ = _pair_transition_score(next_item, cur_item, genre_weight=genre_weight)
                 swapped = swap_score_a + swap_score_b
                 if swapped > baseline + 0.12:
                     ordered[i], ordered[i + 1] = ordered[i + 1], ordered[i]
@@ -646,11 +767,19 @@ def generate_playlist(
         else:
             energy_penalty_weight = 0.15
         prev = ordered[idx - 1] if idx > 0 else None
-        transition_score, transition_reason = _pair_transition_score(prev, item)
+        transition_score, transition_reason = _pair_transition_score(prev, item, genre_weight=genre_weight)
         recent_artists = [o.track.artist for o in ordered[max(0, idx - artist_cooldown):idx] if o.track.artist] if artist_cooldown > 0 else []
         artist_penalty = 0.20 if item.track.artist and item.track.artist in recent_artists else 0.0
         recent_albums = [o.track.album for o in ordered[max(0, idx - album_cooldown):idx] if o.track.album] if album_cooldown > 0 else []
         album_penalty = 0.12 if item.track.album and item.track.album in recent_albums else 0.0
+        if item.track.artist:
+            artist_count = sum(1 for o in ordered[:idx] if (o.track.artist or "") == item.track.artist)
+            if artist_count > 0:
+                artist_penalty += min(0.20, 0.05 * artist_count)
+        if item.track.album:
+            album_count = sum(1 for o in ordered[:idx] if (o.track.album or "") == item.track.album)
+            if album_count > 0:
+                album_penalty += min(0.14, 0.04 * album_count)
         bpm_jump_penalty = 0.0
         flux_delta = 0.0
         dyn_delta = 0.0
@@ -733,6 +862,11 @@ def generate_playlist(
             "history_window": history_window,
             "history_penalty": history_penalty,
             "strict_constraints": strict_constraints,
+            "genre_mode": resolved_genre_mode,
+            "max_artist_tracks": max_artist_tracks,
+            "max_album_tracks": max_album_tracks,
+            "track_feedback_count": len(track_feedback_map),
+            "artist_feedback_count": len(artist_feedback_map),
         },
         explanation_json={"strategy": "weighted_rule_scoring", "version": "v1"},
     )
@@ -757,6 +891,7 @@ def generate_playlist(
                 "file_path": item.track.file_path,
                 "title": item.track.title,
                 "artist": item.track.artist,
+                "genre": item.track.genre,
                 "score": round(item.score, 6),
                 "energy": round(item.features.energy or 0.0, 6),
                 "bpm": round(item.features.bpm or 0.0, 6),
@@ -793,6 +928,8 @@ def compute_playlist_quality(db: Session, playlist_id: UUID) -> dict:
     energy_deltas = []
     timbre_deltas = []
     artist_repeats = 0
+    genre_matches = 0
+    genre_comparable = 0
     prev = None
     artists = []
     for _, feat, track in rows:
@@ -806,6 +943,12 @@ def compute_playlist_quality(db: Session, playlist_id: UUID) -> dict:
                 harmonic_hits += 1
             if (track.artist or "") == (prev_track.artist or ""):
                 artist_repeats += 1
+            g_prev = _normalize_genre(prev_track.genre)
+            g_cur = _normalize_genre(track.genre)
+            if g_prev and g_cur:
+                genre_comparable += 1
+                if g_prev == g_cur or g_prev in g_cur or g_cur in g_prev:
+                    genre_matches += 1
         prev = (feat, track)
 
     transitions = max(1, len(rows) - 1)
@@ -818,4 +961,5 @@ def compute_playlist_quality(db: Session, playlist_id: UUID) -> dict:
         "mean_adjacent_timbre_delta": round(mean(timbre_deltas), 4) if timbre_deltas else 0.0,
         "adjacent_artist_repeat_rate": round(artist_repeats / transitions, 4),
         "artist_diversity_ratio": round(unique_artists / max(1, len(rows)), 4),
+        "genre_coherence_rate": round(genre_matches / genre_comparable, 4) if genre_comparable else 0.0,
     }

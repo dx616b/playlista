@@ -55,7 +55,7 @@ ANALYSIS_VERSION=v1
 Optional settings (supported by app):
 
 ```env
-# Comma-separated roots shown in UI preset dropdown
+# Comma-separated roots used by Library Scan button
 MUSIC_ROOTS=/music/A,/music/B
 SCAN_PRESETS=/music/A,/music/B
 
@@ -65,8 +65,10 @@ ESSENTIA_TF_MODEL_PATH=/models/msd-musicnn-1.pb
 
 Notes:
 
-- Use absolute host paths for `MUSIC_ROOT`.
-- Compose mounts `${MUSIC_ROOT}` read-only into API/worker.
+- Use absolute host paths for `MUSIC_ROOTS` / `SCAN_PRESETS` / `MUSIC_ROOT`.
+- If `MUSIC_ROOTS` or `SCAN_PRESETS` are set, scan uses those explicit roots.
+- Fallback `MUSIC_ROOT` is only used when explicit roots are not set.
+- Compose mounts `${MUSIC_ROOT}` plus common host roots (`/srv`, `/mnt`, `/media`) read-only into API/worker.
 - If you change analysis logic significantly, bump `ANALYSIS_VERSION` and enqueue analysis again.
 
 ## Deploy (Docker Compose)
@@ -93,10 +95,10 @@ docker compose -f infra/docker-compose.yml logs -f api worker
 
 1. Open UI: `http://localhost:8080`
 2. In **Library**:
-   - set/select scan path
+   - configure env roots (`MUSIC_ROOTS` or `SCAN_PRESETS`)
    - click **Scan**
 3. Click **Enqueue Analysis**
-4. Wait until jobs process (`/analysis/jobs` or logs)
+4. Use **Start Watch** to see real-time remaining/ETA
 5. Go to **Generate Playlist**, choose profile/preset, click **Generate**
 6. Export via **M3U**, **M3U8**, or **JSON**
 
@@ -114,12 +116,12 @@ Recent UI changes included in this version:
 
 ### Library
 
-- Scan local root folders
-- Use scan presets from env (`MUSIC_ROOTS` / `SCAN_PRESETS`)
+- Scan env-configured root folders (`MUSIC_ROOTS` / `SCAN_PRESETS`, fallback `MUSIC_ROOT`)
+- Real-time watch in UI shows queued/running/completed/failed, remaining, avg sec/track, ETA
 
 ### Tracks
 
-- Server-side pagination (30/page), sorting, search, analyzed filter
+- Server-side pagination (30/page), sorting, search, analyzed filter, genre filter
 - Shows normalized metrics and raw metrics
 - Hide/show table toggle
 
@@ -140,7 +142,7 @@ Recent UI changes included in this version:
 - Custom panel includes advanced controls:
   - `seed_track_id`, BPM range, curve, diversity
   - cooldowns, transition threshold, temperature
-  - history window/penalty, strict constraints
+  - history window/penalty, strict constraints, `genre_mode` (`strict|balanced|open`)
 - Real-time mode can auto-regenerate on control changes
 
 ## Workers and Throughput
@@ -181,15 +183,17 @@ Health/metrics:
 Library/tracks:
 
 - `POST /library/scan` (`root_path` or `root_paths`)
+- `POST /library/scan` (empty payload scans env roots)
 - `GET /library/presets`
 - `GET /tracks`
-- `GET /tracks/status` (server-side `page`, `page_size`, `q`, `analyzed`, `sort_by`, `sort_dir`)
+- `GET /tracks/status` (server-side `page`, `page_size`, `q`, `genre`, `analyzed`, `sort_by`, `sort_dir`)
 
 Analysis:
 
 - `POST /analysis/enqueue` (incremental by default if `track_ids` omitted)
 - `POST /analysis/retry-failed`
 - `GET /analysis/jobs`
+- `GET /analysis/progress` (counts + remaining + avg sec/track + ETA)
 
 Playlist generation:
 
@@ -242,7 +246,8 @@ What it does:
 ## Troubleshooting
 
 - **No tracks found after scan**
-  - Check `MUSIC_ROOT` path exists on host and contains supported files
+  - Check env roots (`MUSIC_ROOTS`/`SCAN_PRESETS`/`MUSIC_ROOT`) exist in API container namespace
+  - For project-local `music/`, use `/app/music` inside container (not host absolute path)
   - Supported extensions include: `.mp3`, `.flac`, `.wav`, `.m4a`, `.ogg`, `.aiff`, `.aac`
 
 - **Analysis not progressing**
