@@ -81,9 +81,34 @@ def metrics(db: Session = Depends(get_db)):
 
 @app.post("/library/scan")
 def library_scan(payload: ScanRequest, db: Session = Depends(get_db)):
-    root = payload.root_path or get_default_music_root()
+    roots: list[str] = []
+    if payload.root_paths:
+        roots.extend([p.strip() for p in payload.root_paths if p and p.strip()])
+    if payload.root_path and payload.root_path.strip():
+        roots.append(payload.root_path.strip())
+    if not roots:
+        roots = [get_default_music_root()]
+    roots = list(dict.fromkeys(roots))
+
     try:
-        return scan_library(db, root)
+        if len(roots) == 1:
+            result = scan_library(db, roots[0])
+            result["roots"] = roots
+            return result
+
+        per_root: list[dict] = []
+        totals = {"discovered": 0, "created": 0, "updated": 0, "skipped": 0}
+        for root in roots:
+            result = scan_library(db, root)
+            per_root.append({"root_path": root, **result})
+            for key in totals:
+                totals[key] += int(result.get(key, 0))
+
+        return {
+            **totals,
+            "roots": roots,
+            "per_root": per_root,
+        }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

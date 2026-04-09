@@ -34,6 +34,11 @@ Services in `infra/docker-compose.yml`:
 ## Configure Environment
 
 Create `.env` at project root (same level as this README).
+Start from the tracked template:
+
+```bash
+cp .env.example .env
+```
 
 Minimum example:
 
@@ -175,7 +180,7 @@ Health/metrics:
 
 Library/tracks:
 
-- `POST /library/scan`
+- `POST /library/scan` (`root_path` or `root_paths`)
 - `GET /library/presets`
 - `GET /tracks`
 - `GET /tracks/status` (server-side `page`, `page_size`, `q`, `analyzed`, `sort_by`, `sort_dir`)

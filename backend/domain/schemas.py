@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 class ScanRequest(BaseModel):
     root_path: str | None = None
+    root_paths: list[str] | None = None
 
 
 class AnalysisEnqueueRequest(BaseModel):

@@ -34,7 +34,7 @@
     <div class="card">
       <h3>Library</h3>
       <div class="row">
-        <input id="scanPath" placeholder="/music" />
+        <input id="scanPath" placeholder="/music or /music/A,/music/B" />
         <select id="scanPreset"></select>
         <button onclick="useSelectedPreset()">Use Preset</button>
         <button onclick="scanLibrary()">Scan</button>
@@ -600,12 +600,18 @@
       }
 
       async function scanLibrary() {
-        const root_path = document.getElementById("scanPath").value || null;
+        const raw = document.getElementById("scanPath").value || "";
+        const roots = raw
+          .split(/[,\n;]+/)
+          .map((v) => v.trim())
+          .filter(Boolean);
+        const root_path = roots.length === 1 ? roots[0] : null;
+        const root_paths = roots.length > 1 ? roots : null;
         savePath();
         const res = await fetch(`${API}/library/scan`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ root_path })
+          body: JSON.stringify({ root_path, root_paths })
         });
         const data = await res.json();
         document.getElementById("libraryOut").textContent = JSON.stringify(data, null, 2);
